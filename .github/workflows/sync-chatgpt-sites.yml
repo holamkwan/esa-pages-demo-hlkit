@@ -1,0 +1,75 @@
+name: Sync ChatGPT Sites mirror
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hlkit-site-mirror
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download published website
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _download mirror.new
+          mkdir -p mirror.new
+          wget \
+            --mirror \
+            --page-requisites \
+            --convert-links \
+            --adjust-extension \
+            --no-parent \
+            --timeout=30 \
+            --tries=3 \
+            --waitretry=3 \
+            --user-agent="Mozilla/5.0 (compatible; HLKiT-Mirror/1.0)" \
+            -e robots=off \
+            --directory-prefix=_download \
+            https://www.hlkit.com/
+
+          test -s _download/www.hlkit.com/index.html
+          cp -a _download/www.hlkit.com/. mirror.new/
+          touch mirror.new/.nojekyll
+
+      - name: Validate downloaded mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s mirror.new/index.html
+          grep -qi "<title" mirror.new/index.html
+          file_count="$(find mirror.new -type f | wc -l)"
+          test "$file_count" -ge 10
+          if grep -Rqi "Attention Required" mirror.new; then
+            echo "Cloudflare challenge page detected; keeping previous mirror."
+            exit 1
+          fi
+
+      - name: Publish only when content changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf mirror
+          mv mirror.new mirror
+          git add -A mirror
+          if git diff --cached --quiet; then
+            echo "No website changes detected."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Sync published hlkit.com mirror"
+          git push
