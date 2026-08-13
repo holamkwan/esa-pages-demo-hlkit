@@ -16,7 +16,6 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 8
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -45,6 +44,17 @@ jobs:
           cp -a _download/www.hlkit.com/. mirror.new/
           touch mirror.new/.nojekyll
 
+      - name: Restore compressed assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' compressed; do
+            target="${compressed%.gz}"
+            gzip -cd -- "$compressed" > "$target.new"
+            test -s "$target.new"
+            mv -f -- "$target.new" "$target"
+          done < <(find mirror.new -type f -name '*.gz' -print0)
+
       - name: Validate downloaded mirror
         shell: bash
         run: |
@@ -53,23 +63,65 @@ jobs:
           grep -qi "<title" mirror.new/index.html
           file_count="$(find mirror.new -type f | wc -l)"
           test "$file_count" -ge 10
+
           if grep -Rqi "Attention Required" mirror.new; then
-            echo "Cloudflare challenge page detected; keeping previous mirror."
+            echo "Challenge page detected; keeping previous mirror."
             exit 1
           fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          from urllib.parse import unquote, urlsplit
+
+          root = Path("mirror.new")
+          refs = set()
+
+          for html in root.rglob("*.html"):
+              text = html.read_text(encoding="utf-8", errors="ignore")
+              refs.update(re.findall(r'''(?:src|href)=["']([^"'?#]+\.(?:css|js))(?:[?#][^"']*)?["']''', text, re.I))
+              refs.update(re.findall(r'''import\(["']([^"'?#]+\.js)(?:[?#][^"']*)?["']\)''', text))
+              refs.update(re.findall(r'''\\?/(assets/[^"'\\ ]+\.(?:css|js))''', text, re.I))
+
+          missing = []
+          for ref in sorted(refs):
+              path = urlsplit(ref).path
+              if path.startswith(("http://", "https://", "//")):
+                  continue
+              local = root / unquote(path.lstrip("/"))
+              if not local.is_file() or local.stat().st_size == 0:
+                  missing.append(path)
+
+          if not list(root.glob("assets/*.css")):
+              missing.append("assets/*.css")
+          if not list(root.glob("assets/*.js")):
+              missing.append("assets/*.js")
+
+          if missing:
+              raise SystemExit("Missing referenced assets: " + ", ".join(sorted(set(missing))))
+
+          print(f"Validated {len(refs)} referenced CSS/JS assets.")
+          PY
 
       - name: Publish only when content changed
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf mirror
-          mv mirror.new mirror
-          git add -A mirror
-          if git diff --cached --quiet; then
-            echo "No website changes detected."
-            exit 0
+          rm -rf mirror.old
+          if [ -d mirror ]; then
+            mv mirror mirror.old
           fi
+          mv mirror.new mirror
+          rm -rf mirror.old _download
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Sync published hlkit.com mirror"
+          git add -A mirror
+
+          if git diff --cached --quiet; then
+            echo "Mirror is already up to date."
+            exit 0
+          fi
+
+          git commit -m "Update ChatGPT Sites mirror"
           git push
