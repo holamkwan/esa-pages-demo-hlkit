@@ -64,8 +64,8 @@ jobs:
           file_count="$(find mirror.new -type f | wc -l)"
           test "$file_count" -ge 10
 
-          if grep -Rqi "Attention Required" mirror.new; then
-            echo "Challenge page detected; keeping previous mirror."
+          if grep -RqiE "Attention Required|Just a moment|Checking your browser|cf-chl-|captcha" mirror.new/*.html; then
+            echo "Challenge or verification page detected; keeping previous mirror."
             exit 1
           fi
 
@@ -76,12 +76,22 @@ jobs:
 
           root = Path("mirror.new")
           refs = set()
+          html_files = list(root.rglob("*.html"))
 
-          for html in root.rglob("*.html"):
+          if not html_files:
+              raise SystemExit("No HTML pages were downloaded")
+
+          for html in html_files:
               text = html.read_text(encoding="utf-8", errors="ignore")
-              refs.update(re.findall(r'''(?:src|href)=["']([^"'?#]+\.(?:css|js))(?:[?#][^"']*)?["']''', text, re.I))
+              if html == root / "index.html" and len(text) < 5000:
+                  raise SystemExit("Homepage is unexpectedly small")
+              refs.update(re.findall(r'''(?:src|href)=["']([^"'?#]+\.(?:css|js|mjs|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf))(?:[?#][^"']*)?["']''', text, re.I))
               refs.update(re.findall(r'''import\(["']([^"'?#]+\.js)(?:[?#][^"']*)?["']\)''', text))
-              refs.update(re.findall(r'''\\?/(assets/[^"'\\ ]+\.(?:css|js))''', text, re.I))
+              refs.update(re.findall(r'''\\?/(assets/[^"'\\ )]+\.(?:css|js|mjs|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf))''', text, re.I))
+
+          for css in root.rglob("*.css"):
+              text = css.read_text(encoding="utf-8", errors="ignore")
+              refs.update(re.findall(r'''url\(["']?([^"')?#]+\.(?:png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf))(?:[?#][^"')]*)?["']?\)''', text, re.I))
 
           missing = []
           for ref in sorted(refs):
@@ -103,6 +113,23 @@ jobs:
 
           print(f"Validated {len(refs)} referenced CSS/JS assets.")
           PY
+
+          if [ -d mirror ]; then
+            old_count="$(find mirror -type f | wc -l)"
+            new_count="$(find mirror.new -type f | wc -l)"
+            if [ "$old_count" -ge 20 ] && [ "$new_count" -lt $((old_count * 40 / 100)) ]; then
+              echo "Downloaded mirror lost more than 60% of its files; keeping previous mirror."
+              exit 1
+            fi
+          fi
+
+          (
+            cd mirror.new
+            find . -type f ! -name '.mirror-manifest.sha256' -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > .mirror-manifest.sha256
+            sha256sum -c .mirror-manifest.sha256
+          )
 
       - name: Publish only when content changed
         shell: bash
