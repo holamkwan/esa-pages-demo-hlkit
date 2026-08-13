@@ -86,11 +86,12 @@ jobs:
           missing = []
           for ref in sorted(refs):
               path = urlsplit(ref).path
-              if path.startswith(("http://", "https://", "//")):
+              normalized = "/" + path.lstrip("/")
+              if not normalized.startswith("/assets/"):
                   continue
-              local = root / unquote(path.lstrip("/"))
+              local = root / unquote(normalized.lstrip("/"))
               if not local.is_file() or local.stat().st_size == 0:
-                  missing.append(path)
+                  missing.append(normalized)
 
           if not list(root.glob("assets/*.css")):
               missing.append("assets/*.css")
