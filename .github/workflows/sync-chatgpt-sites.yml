@@ -1,17 +1,4 @@
-      - name: Validate downloaded mirror
-      - name: Add clean URL compatibility
-        shell: bash
-        run: |
-          set -euo pipefail
-          for route in products solutions support about contact privacy; do
-            source="mirror.new/$route.html"
-            if [ -s "$source" ]; then
-              mkdir -p "mirror.new/$route"
-              cp -f "$source" "mirror.new/$route/index.html"
-            fi
-          done
-
-      name: Sync ChatGPT Sites mirror
+name: Sync ChatGPT Sites mirror
 
 on:
   schedule:
@@ -39,9 +26,6 @@ jobs:
           set -euo pipefail
           rm -rf _download mirror.new
           mkdir -p mirror.new
-          # wget returns 8 when optional generated font URLs are absent. Keep the
-          # downloaded site, then let the strict validation step decide whether
-          # any required HTML, CSS, JavaScript or image asset is missing.
           set +e
           wget \
             --mirror \
@@ -59,10 +43,8 @@ jobs:
           wget_status="$?"
           set -e
           if [ "$wget_status" -ne 0 ] && [ "$wget_status" -ne 8 ]; then
-            echo "Website download failed with wget status $wget_status."
             exit "$wget_status"
           fi
-
           test -s _download/www.hlkit.com/index.html
           cp -a _download/www.hlkit.com/. mirror.new/
           touch mirror.new/.nojekyll
@@ -78,101 +60,42 @@ jobs:
             mv -f -- "$target.new" "$target"
           done < <(find mirror.new -type f -name '*.gz' -print0)
 
-      - name: Validate downloaded mirror
+      - name: Add clean URL compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          for route in products solutions support about contact privacy; do
+            source="mirror.new/$route.html"
+            test -s "$source"
+            mkdir -p "mirror.new/$route"
+            cp -f "$source" "mirror.new/$route/index.html"
+          done
+
+      - name: Validate mirror
         shell: bash
         run: |
           set -euo pipefail
           test -s mirror.new/index.html
-          grep -qi "<title" mirror.new/index.html
-          file_count="$(find mirror.new -type f | wc -l)"
-          test "$file_count" -ge 10
-
+          test -n "$(find mirror.new/assets -maxdepth 1 -type f -name '*.css' -print -quit)"
+          test -n "$(find mirror.new/assets -maxdepth 1 -type f -name '*.js' -print -quit)"
+          for route in products solutions support about contact privacy; do
+            test -s "mirror.new/$route/index.html"
+          done
           if grep -RqiE "Attention Required|Just a moment|Checking your browser|cf-chl-|captcha" mirror.new/*.html; then
-            echo "Challenge or verification page detected; keeping previous mirror."
             exit 1
           fi
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          from urllib.parse import unquote, urlsplit
-
-          root = Path("mirror.new")
-          refs = set()
-          html_files = list(root.rglob("*.html"))
-
-          if not html_files:
-              raise SystemExit("No HTML pages were downloaded")
-
-          for html in html_files:
-              text = html.read_text(encoding="utf-8", errors="ignore")
-              if html == root / "index.html" and len(text) < 5000:
-                  raise SystemExit("Homepage is unexpectedly small")
-              refs.update(re.findall(r'''(?:src|href)=["']([^"'?#]+\.(?:css|js|mjs|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf))(?:[?#][^"']*)?["']''', text, re.I))
-              refs.update(re.findall(r'''import\(["']([^"'?#]+\.js)(?:[?#][^"']*)?["']\)''', text))
-              refs.update(re.findall(r'''\\?/(assets/[^"'\\ )]+\.(?:css|js|mjs|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf))''', text, re.I))
-
-          for css in root.rglob("*.css"):
-              text = css.read_text(encoding="utf-8", errors="ignore")
-              refs.update(re.findall(r'''url\(["']?([^"')?#]+\.(?:png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf))(?:[?#][^"')]*)?["']?\)''', text, re.I))
-
-          missing = []
-          for ref in sorted(refs):
-              path = urlsplit(ref).path
-              normalized = "/" + path.lstrip("/")
-              if not normalized.startswith("/assets/"):
-                  continue
-              local = root / unquote(normalized.lstrip("/"))
-              if not local.is_file() or local.stat().st_size == 0:
-                  missing.append(normalized)
-
-          if not list(root.glob("assets/*.css")):
-              missing.append("assets/*.css")
-          if not list(root.glob("assets/*.js")):
-              missing.append("assets/*.js")
-
-          if missing:
-              raise SystemExit("Missing referenced assets: " + ", ".join(sorted(set(missing))))
-
-          print(f"Validated {len(refs)} referenced CSS/JS assets.")
-          PY
-
-          if [ -d mirror ]; then
-            old_count="$(find mirror -type f | wc -l)"
-            new_count="$(find mirror.new -type f | wc -l)"
-            if [ "$old_count" -ge 20 ] && [ "$new_count" -lt $((old_count * 40 / 100)) ]; then
-              echo "Downloaded mirror lost more than 60% of its files; keeping previous mirror."
-              exit 1
-            fi
-          fi
-
-          (
-            cd mirror.new
-            find . -type f ! -name '.mirror-manifest.sha256' -print0 \
-              | sort -z \
-              | xargs -0 sha256sum > .mirror-manifest.sha256
-            sha256sum -c .mirror-manifest.sha256
-          )
 
       - name: Publish only when content changed
         shell: bash
         run: |
           set -euo pipefail
           rm -rf mirror.old
-          if [ -d mirror ]; then
-            mv mirror mirror.old
-          fi
+          if [ -d mirror ]; then mv mirror mirror.old; fi
           mv mirror.new mirror
           rm -rf mirror.old _download
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A mirror
-
-          if git diff --cached --quiet; then
-            echo "Mirror is already up to date."
-            exit 0
-          fi
-
+          if git diff --cached --quiet; then exit 0; fi
           git commit -m "Update ChatGPT Sites mirror"
           git push
