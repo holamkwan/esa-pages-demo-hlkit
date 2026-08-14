@@ -26,6 +26,10 @@ jobs:
           set -euo pipefail
           rm -rf _download mirror.new
           mkdir -p mirror.new
+          # wget returns 8 when optional generated font URLs are absent. Keep the
+          # downloaded site, then let the strict validation step decide whether
+          # any required HTML, CSS, JavaScript or image asset is missing.
+          set +e
           wget \
             --mirror \
             --page-requisites \
@@ -39,6 +43,12 @@ jobs:
             -e robots=off \
             --directory-prefix=_download \
             https://www.hlkit.com/
+          wget_status="$?"
+          set -e
+          if [ "$wget_status" -ne 0 ] && [ "$wget_status" -ne 8 ]; then
+            echo "Website download failed with wget status $wget_status."
+            exit "$wget_status"
+          fi
 
           test -s _download/www.hlkit.com/index.html
           cp -a _download/www.hlkit.com/. mirror.new/
