@@ -1,4 +1,17 @@
-name: Sync ChatGPT Sites mirror
+      - name: Validate downloaded mirror
+      - name: Add clean URL compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          for route in products solutions support about contact privacy; do
+            source="mirror.new/$route.html"
+            if [ -s "$source" ]; then
+              mkdir -p "mirror.new/$route"
+              cp -f "$source" "mirror.new/$route/index.html"
+            fi
+          done
+
+      name: Sync ChatGPT Sites mirror
 
 on:
   schedule:
