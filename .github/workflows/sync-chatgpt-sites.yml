@@ -64,12 +64,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for route in products solutions support about contact privacy; do
-            source="mirror.new/$route.html"
-            test -s "$source"
-            mkdir -p "mirror.new/$route"
-            cp -f "$source" "mirror.new/$route/index.html"
-          done
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("mirror.new")
+          routes = ("products", "solutions", "support", "about", "contact", "privacy")
+          for route in routes:
+              source = root / f"{route}.html"
+              if not source.is_file() or source.stat().st_size == 0:
+                  raise SystemExit(f"Missing route source: {source}")
+              text = source.read_text(encoding="utf-8", errors="ignore")
+              text = re.sub(r'(src|href)="((?:assets|images)/[^"]+|hlkit-(?:mark\.png|logo\.jpg))"', r'\1="/\2"', text)
+              text = text.replace('import("assets/', 'import("/assets/')
+              for link in routes:
+                  text = text.replace(f'href="{link}.html"', f'href="/{link}"')
+              target = root / route / "index.html"
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_text(text, encoding="utf-8")
+          PY
 
       - name: Validate mirror
         shell: bash
@@ -80,6 +93,7 @@ jobs:
           test -n "$(find mirror.new/assets -maxdepth 1 -type f -name '*.js' -print -quit)"
           for route in products solutions support about contact privacy; do
             test -s "mirror.new/$route/index.html"
+            ! grep -q 'src="hlkit-mark.png"' "mirror.new/$route/index.html"
           done
           if grep -RqiE "Attention Required|Just a moment|Checking your browser|cf-chl-|captcha" mirror.new/*.html; then
             exit 1
